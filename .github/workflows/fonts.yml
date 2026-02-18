@@ -1,0 +1,240 @@
+name: Download and Convert Aporetic Fonts
+
+on:
+  schedule:
+    - cron: '0 1 * * 0'
+  workflow_dispatch: # Allow manual triggering
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    environment:
+      name: github-pages
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Fetch TTF file list from aporetic-fonts-build Pages
+        id: get_fonts
+        run: |
+          # Scrape the index page for TTF hrefs
+          curl -s https://sunworms.github.io/aporetic-fonts-build/ \
+            | grep -oP 'href="\Kfonts/[^"]+\.ttf' \
+            > ttf_paths.txt
+
+          echo "Found $(wc -l < ttf_paths.txt) TTF files:"
+          cat ttf_paths.txt
+
+      - name: Download TTF files
+        run: |
+          mkdir -p fonts/original
+
+          BASE_URL="https://sunworms.github.io/aporetic-fonts-build"
+
+          while IFS= read -r path; do
+            filename=$(basename "$path")
+            echo "Downloading $filename..."
+            curl -fsSL "$BASE_URL/$path" -o "fonts/original/$filename"
+          done < ttf_paths.txt
+
+          echo "Downloaded files:"
+          ls -lh fonts/original/
+      
+      - name: Install woff2 converter
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y woff2
+      
+      - name: Convert fonts to woff2
+        run: |
+          mkdir -p fonts/woff2
+          
+          find fonts/original -type f \( -name "*.ttf" -o -name "*.otf" \) | while read font; do
+            filename=$(basename "$font")
+            echo "Converting $filename..."
+            woff2_compress "$font"
+            find fonts/original -name "*.woff2" -exec mv {} fonts/woff2/ \;
+          done
+          
+          echo "Converted fonts:"
+          ls -lh fonts/woff2/
+      
+      - name: Generate CSS stylesheet
+        run: |
+          mkdir -p public
+          cat > public/fonts.css << EOF
+          /**
+           * Aporetic Fonts
+           * Source: https://sunworms.github.io/aporetic-fonts-build
+           * Generated: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+           */
+          
+          EOF
+          
+          for font in fonts/woff2/*.woff2; do
+            if [ -f "$font" ]; then
+              filename=$(basename "$font" .woff2)
+              
+              family_name=$(echo "$filename" | sed -E 's/-(Regular|Bold|Italic|BoldItalic|Light|Medium|SemiBold|Black|Thin|ExtraLight|ExtraBold)$//')
+              
+              weight="400"
+              if echo "$filename" | grep -qi "thin"; then weight="100"
+              elif echo "$filename" | grep -qi "extralight"; then weight="200"
+              elif echo "$filename" | grep -qi "light"; then weight="300"
+              elif echo "$filename" | grep -qi "medium"; then weight="500"
+              elif echo "$filename" | grep -qi "semibold"; then weight="600"
+              elif echo "$filename" | grep -qi "bold"; then weight="700"
+              elif echo "$filename" | grep -qi "extrabold"; then weight="800"
+              elif echo "$filename" | grep -qi "black"; then weight="900"
+              fi
+              
+              style="normal"
+              if echo "$filename" | grep -qi "italic"; then style="italic"; fi
+              
+              cat >> public/fonts.css << FONTFACE
+          @font-face {
+            font-family: '$family_name';
+            src: url('./fonts/$filename.woff2') format('woff2');
+            font-weight: $weight;
+            font-style: $style;
+            font-display: swap;
+          }
+          
+          FONTFACE
+            fi
+          done
+          
+          echo "Generated CSS:"
+          cat public/fonts.css
+      
+      - name: Copy fonts to public directory
+        run: |
+          mkdir -p public/fonts
+          cp fonts/woff2/* public/fonts/
+      
+      - name: Create index.html demo page
+        run: |
+          cat > public/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Aporetic Fonts - WOFF2</title>
+            <link rel="stylesheet" href="fonts.css">
+            <style>
+              body {
+                font-family: system-ui, -apple-system, sans-serif;
+                max-width: 1200px;
+                margin: 0 auto;
+                padding: 2rem;
+                line-height: 1.6;
+              }
+              h1 { margin-bottom: 0.5rem; }
+              .subtitle { color: #666; margin-bottom: 2rem; }
+              .font-demo {
+                margin: 2rem 0;
+                padding: 1.5rem;
+                border: 1px solid #ddd;
+                border-radius: 8px;
+              }
+              .font-demo h3 { margin-top: 0; }
+              .sample-text {
+                font-size: 1.2rem;
+                margin: 1rem 0;
+              }
+              .alphabet {
+                font-size: 1rem;
+                color: #666;
+              }
+              code {
+                background: #f4f4f4;
+                padding: 0.2rem 0.4rem;
+                border-radius: 3px;
+                font-size: 0.9em;
+              }
+              .usage {
+                background: #f9f9f9;
+                padding: 1.5rem;
+                border-radius: 8px;
+                margin: 2rem 0;
+              }
+              pre {
+                background: #2d2d2d;
+                color: #f8f8f8;
+                padding: 1rem;
+                border-radius: 5px;
+                overflow-x: auto;
+              }
+            </style>
+          </head>
+          <body>
+            <h1>Aporetic Fonts - WOFF2</h1>
+            <p class="subtitle">Converted from <a href="https://sunworms.github.io/aporetic-fonts-build">sunworms/aporetic-fonts-build</a></p>
+            
+            <div class="usage">
+              <h2>Usage</h2>
+              <p>Include the stylesheet in your HTML:</p>
+              <pre>&lt;link rel="stylesheet" href="https://sunworms.github.io/aporetic-web-fonts/fonts.css"&gt;</pre>
+              <p>Then use the fonts in your CSS:</p>
+              <pre>body {
+            font-family: 'aporetic-sans-mono-normalboldupright', sans-serif;
+          }</pre>
+            </div>
+            
+            <h2>Available Fonts</h2>
+            <div id="font-demos"></div>
+            
+            <script>
+              fetch('fonts.css')
+                .then(r => r.text())
+                .then(css => {
+                  const fontFamilies = new Set();
+                  const regex = /font-family:\s*'([^']+)'/g;
+                  let match;
+                  while ((match = regex.exec(css)) !== null) {
+                    fontFamilies.add(match[1]);
+                  }
+                  
+                  const container = document.getElementById('font-demos');
+                  fontFamilies.forEach(family => {
+                    const demo = document.createElement('div');
+                    demo.className = 'font-demo';
+                    demo.innerHTML = `
+                      <h3>${family}</h3>
+                      <p class="sample-text" style="font-family: '${family}'">
+                        The quick brown fox jumps over the lazy dog
+                      </p>
+                      <p class="alphabet" style="font-family: '${family}'">
+                        ABCDEFGHIJKLMNOPQRSTUVWXYZ<br>
+                        abcdefghijklmnopqrstuvwxyz<br>
+                        0123456789 !@#$%^&*()
+                      </p>
+                      <code>font-family: '${family}';</code>
+                    `;
+                    container.appendChild(demo);
+                  });
+                });
+            </script>
+          </body>
+          </html>
+          EOF
+      
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './public'
+      
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
